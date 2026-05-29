@@ -141,6 +141,14 @@ export function toAgentStoreSessionKey(params: {
 
 /**
  * 统一入口：把 sessionId / sessionKey 归一为 sessionKey
+ * 
+ * export 表示将这个函数导出，让其他文件可以通过 import 使用它。
+ * // session-key.ts 中导出
+export function resolveSessionKey(params: { ... }) { ... }
+
+// cli.ts 中导入使用
+import { resolveSessionKey } from "./session-key.js";
+没有 export 的函数只能在当前文件内部使用，外部无法访问
  */
 export function resolveSessionKey(params: {
   agentId?: string | undefined;

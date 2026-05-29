@@ -57,6 +57,9 @@ export {
 // pi-ai context overflow 检测
 export { isContextOverflow } from "@mariozechner/pi-ai";
 
+// 自定义 OpenAI 兼容 Provider（支持自建 LLM 服务端）
+export { MyOpenAIStreamProvider, type MyOpenAIConfig } from "./my-openai-stream.js";
+
 // Agent 层: 错误分类与重试（pi-ai 不包含）
 export {
   FailoverError,

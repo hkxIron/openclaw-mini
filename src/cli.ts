@@ -6,6 +6,17 @@
  * - 线性滚动输出，不保留固定底部区域
  * - 输入提示始终跟随在最后一条消息之后
  * - 历史区仅保留用户/模型/工具事件，不保留输入框装饰
+ * 
+ * 本文件为项目入口：
+ * 从 package.json 中可以看出：
+"bin": {
+  "openclaw-mini": "dist/src/cli.js"    // CLI 命令入口
+},
+"scripts": {
+  "dev": "tsx src/cli.ts",              // 开发运行
+  "start": "node dist/src/cli.js",     // 生产运行
+}
+另外 cli.ts:1 的 shebang 行 #!/usr/bin/env node 也表明它是一个可直接执行的入口文件。
  */
 
 import fs from "node:fs";
@@ -15,6 +26,7 @@ import { Writable } from "node:stream";
 import { Agent } from "./index.js";
 import { resolveSessionKey } from "./session-key.js";
 import { getEnvApiKey } from "@mariozechner/pi-ai";
+import { MyOpenAIStreamProvider } from "./provider/my-openai-stream.js";
 import type { ApprovalConfig, ApprovalDecision, ApprovalRequest } from "./tool-approval.js";
 
 // ============== .env 加载 ==============
@@ -41,6 +53,9 @@ function loadEnvFile(dir: string = process.cwd()): void {
     const eqIdx = trimmed.indexOf("=");
     if (eqIdx === -1) continue;
     const key = trimmed.slice(0, eqIdx).trim();
+    // 从=号后的内容视为 value，但会去除首尾的引号
+    // 去除开头或结尾的单/双引号
+    // 如果没有 /g，replace 只会替换第一个匹配（比如只去掉开头引号，结尾的留着）。加了 /g 后开头和结尾的引号都会被去掉。
     const value = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, "");
     if (key && !(key in process.env)) {
       process.env[key] = value;
@@ -190,25 +205,23 @@ function clearPromptEchoLine(): void {
 // ============== 主函数 ==============
 
 async function main() {
-  const args = process.argv.slice(2);
-  console.log(`args:${args} process.env:${JSON.stringify(process.env)}`);
+  const args = process.argv.slice(2); // 当前进程的命令行参数
+  //console.log(`args:${args} process.env:${JSON.stringify(process.env)}`);
+  console.log(`args:${args}`);
   const provider = readFlag(args, "--provider") ?? process.env.OPENCLAW_MINI_PROVIDER ?? "anthropic";
   const model = readFlag(args, "--model") ?? process.env.OPENCLAW_MINI_MODEL;
   const baseUrl = readFlag(args, "--base-url") ?? process.env.OPENCLAW_MINI_BASE_URL;
   const reasoningFlag = readFlag(args, "--reasoning") ?? process.env.OPENCLAW_MINI_REASONING;
   const reasoning = reasoningFlag === "none" ? undefined : (reasoningFlag as any) ?? "medium";
   //const apiKey = readFlag(args, "--api-key") ?? getEnvApiKey(provider);
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.API_KEY;
   if (!apiKey) {
     console.error(`错误: 未找到 ${provider} 的 API Key，请设置对应环境变量或使用 --api-key 参数`);
     process.exit(1);
   }
 
-  const agentId =
-    readFlag(args, "--agent") ??
-    process.env.OPENCLAW_MINI_AGENT_ID ??
-    "main";
-  const sessionId = resolveSessionIdArg(args) || `session-${Date.now()}`;
+  const agentId = readFlag(args, "--agent") ??  process.env.OPENCLAW_MINI_AGENT_ID ?? "main";
+  const sessionId = resolveSessionIdArg(args) || `session-${Date.now()}`; // Date.now() -> 1780060321434
   const workspaceDir = process.cwd();
   const sessionKey = resolveSessionKey({ agentId, sessionId });
 
@@ -217,22 +230,45 @@ async function main() {
   const approvalEnabled = args.includes("--approval");
   let approval: ApprovalConfig | undefined;
   if (approvalEnabled) {
+    /**
+     * ask 决定工具审批的询问策略，有两个值：
+     * 
+      "always" — 每次执行工具都询问用户是否批准
+      "on-miss" — 只在工具不在白名单中时才询问
+      as const 是 TypeScript 的类型断言，把字符串类型从宽泛的 string 收窄为精确的字面量类型 "always" 或 "on-miss"，以满足后面 ApprovalConfig 的类型约束。
+
+      ask 本身就是一个字符串。但 TypeScript 的类型检查是结构化的（duck typing），不要求显式引用类型名。
+      as const 让 ask 的类型从 string 收窄为字面量 "always" | "on-miss"，而 ApprovalAsk 的定义恰好是 "off" | "on-miss" | "always"。
+      赋值时 TypeScript 只检查值是否兼容目标类型：
+
+      ask 的类型: "always" | "on-miss"
+      approval.ask 期望: "off" | "on-miss" | "always"
+      "always" | "on-miss" 是 "off" | "on-miss" | "always" 的子集 → 兼容 ✓
+
+      所以不需要显式写 const ask: ApprovalAsk = ...，
+      只要值匹配就能通过类型检查。如果去掉 as const，
+      ask 的类型就是宽泛的 string，赋给 ApprovalAsk 类型的字段就会报错。
+     */
     const ask = approvalFlag === "always" ? "always" as const : "on-miss" as const;
     approval = {
-      ask,
+      ask, // ask 放进去用的是 JavaScript 的对象属性简写语法——当属性名和变量名相同时，{ ask } 等价于 { ask: ask }。
       security: "full",
       tools: { exec: "allowlist", write: "allowlist", edit: "allowlist" },
     };
   }
 
   // readline（在 agent 之前创建，供审批处理器使用）
+  // 自定义输出流: 过滤 ANSI 清屏序列（\x1b[J / \x1b[0J），防止 readline 内部清屏擦掉已有输出
   const rlOutput = new Writable({
     write(chunk, _encoding, callback) {
       const text = typeof chunk === "string" ? chunk : chunk.toString();
       process.stdout.write(text.replace(/\x1b\[0?J/g, ""), callback);
     },
   });
-  const rl = readline.createInterface({
+  // 创建交互式输入接口: stdin 读取用户输入，
+  // output: rlOutput — 输出走自定义流（而非直接 stdout），避免清屏副作用
+  // 之后用 readLineIFace.question(...) 向用户提问并等待输入（如工具审批时的 [y/n/a] 提示）
+  const readLineIFace = readline.createInterface({
     input: process.stdin,
     output: rlOutput,
   });
@@ -243,7 +279,7 @@ async function main() {
         closeOutputLine();
         const label = formatToolCompact(request.toolName, request.args);
         return new Promise((resolve) => {
-          rl.question(
+          readLineIFace.question(
             `${badge("?", badgeStyles.approve)} ${color("approve", "yellow")} ${label}? ${color("[y/n/a]", "dim")} `,
             (answer) => {
               const a = answer.trim().toLowerCase();
@@ -266,6 +302,11 @@ async function main() {
   console.log(color(`  ${hints.join(" · ")}`, "dim"));
   console.log();
 
+  // 使用自定义 OpenAI 兼容 Provider（绕过 pi-ai 的 provider 注册）
+  const myProvider = new MyOpenAIStreamProvider({
+    providerId: provider,
+  });
+
   const agent = new Agent({
     apiKey,
     provider,
@@ -276,6 +317,7 @@ async function main() {
     reasoning,
     approval,
     onApprovalRequest,
+    streamFn: myProvider.stream,
   });
 
   // 事件订阅（对齐 pi-agent-core: Agent.subscribe → 类型化事件处理）
@@ -343,7 +385,7 @@ async function main() {
   });
 
   const prompt = () => {
-    rl.question(`${badge("INPUT", badgeStyles.input)} ${color("❯", "green")} `, async (input) => {
+    readLineIFace.question(`${badge("INPUT", badgeStyles.input)} ${color("❯", "green")} `, async (input) => {
       clearPromptEchoLine();
 
       const trimmed = input.trim();
@@ -520,6 +562,18 @@ async function handleCommand(cmd: string, agent: Agent, sessionKey: string) {
   }
 }
 
+/**
+ * process 是 Node.js 的全局对象，代表当前运行的进程。
+在这个文件中用到的主要属性：
+process.argv — 命令行参数数组，如 ["node", "cli.ts", "--provider", "openai"]
+process.env — 环境变量对象，如 process.env.OPENAI_API_KEY
+process.cwd() — 当前工作目录路径
+process.stdout — 标准输出流（用于打印内容）
+process.stdin — 标准输入流（用于读取用户输入）
+process.exit(1) — 退出进程（1 表示异常退出）
+不需要 import，Node.js 中任何地方都可以直接使用。
+ * 
+ */
 // 处理 Ctrl+C
 process.on("SIGINT", () => {
   closeOutputLine();
