@@ -1,3 +1,15 @@
+/**
+ * Context 模块统一导出
+ *
+ * 本模块负责 Agent 上下文管理的三大核心功能:
+ * 1. Bootstrap — 工作区文件加载 (AGENTS.md, SOUL.md, TOOLS.md 等)
+ * 2. Pruning — 上下文修剪 (三层递进: soft trim → hard clear → message drop)
+ * 3. Compaction — 历史摘要压缩 (超出上下文窗口时自动生成结构化摘要)
+ * 4. Tokens — token 估算 (基于字符数的快速近似)
+ *
+ * 对应 OpenClaw: src/agents/pi-extensions/context-pruning/ + src/agents/compaction.ts
+ */
+
 export { ContextLoader, type ContextFile } from "./loader.js";
 export {
   DEFAULT_AGENTS_FILENAME,

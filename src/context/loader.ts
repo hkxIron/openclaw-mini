@@ -1,3 +1,13 @@
+/**
+ * 上下文加载器 (ContextLoader)
+ *
+ * 负责加载工作区中的 Bootstrap 文件 (AGENTS.md / SOUL.md / TOOLS.md 等),
+ * 并构建系统提示的"项目上下文"部分。
+ *
+ * 对应 OpenClaw: src/agents/context-loader.ts
+ * - 加载 → 过滤(子代理白名单) → 截断(超长文件) → 拼接为 prompt 片段
+ */
+
 import {
   buildBootstrapContextFiles,
   filterBootstrapFilesForSession,

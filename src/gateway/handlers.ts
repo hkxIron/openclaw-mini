@@ -45,14 +45,37 @@ export type Handler = (params: unknown, client: GwClient, ctx: HandlerContext) =
 
 // ============== 安全工具（对齐 openclaw auth.ts safeEqual） ==============
 
-/** 防计时攻击的字符串比较 */
+/**
+ * 防计时攻击的字符串比较（恒定时间比较）
+ *
+ * 输入示例: ("secret-token-abc", "secret-token-abc")
+ * 输出示例: true
+ *
+ * 输入示例: ("secret-token-abc", "wrong-token-xyz")
+ * 输出示例: false
+ *
+ * 注意: 长度不等时直接返回 false（长度信息本身不敏感）
+ */
 function safeEqual(a: string, b: string): boolean {
+  // 长度不等时提前返回，避免 Buffer 分配（长度差异不泄露时间信息）
   if (a.length !== b.length) return false;
   return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
 // ============== connect ==============
 
+/**
+ * 处理 connect 请求 — 客户端认证握手
+ *
+ * 输入示例: ({ token: "secret", nonce: "uuid-from-challenge" }, client, ctx)
+ * 输出示例: { ok: true, payload: { protocol: 1, methods: [...], events: [...], policy: {...} } }
+ *
+ * 验证流程:
+ * 1. 检查 token 是否匹配（timingSafeEqual 防计时攻击）
+ * 2. 检查 nonce 是否匹配（防重放攻击）
+ * 3. 标记 client.authed = true
+ * 4. 返回 HelloOk 包含协议版本、支持的方法/事件列表、策略参数
+ */
 const handleConnect: Handler = async (params, client, ctx) => {
   const p = params as { token?: string; nonce?: string } | undefined;
 
@@ -84,10 +107,16 @@ const handleConnect: Handler = async (params, client, ctx) => {
 // ============== chat.send ==============
 
 /**
+ * 处理 chat.send 请求 — 发送消息并异步执行 Agent
+ *
+ * 输入示例: ({ sessionKey: "main", message: "你好" }, client, ctx)
+ * 输出示例: { ok: true, payload: { sessionKey: "main", runId: "uuid" } }
+ *
  * 对齐 openclaw server-methods/chat.ts:
- * 1. 立即返回 { sessionKey, runId } (ACK)
+ * 1. 立即返回 { sessionKey, runId } (ACK，不阻塞客户端)
  * 2. 异步执行 agent.run()
  * 3. agent 事件流 → broadcast("agent") + broadcast("chat" delta/final)
+ * 4. delta 限流: 150ms 内最多广播一次，减少网络压力
  */
 const handleChatSend: Handler = async (params, _client, ctx) => {
   const p = params as { sessionKey?: string; message?: string } | undefined;
@@ -151,6 +180,14 @@ const handleChatSend: Handler = async (params, _client, ctx) => {
 
 // ============== chat.history ==============
 
+/**
+ * 处理 chat.history 请求 — 获取指定会话的历史消息
+ *
+ * 输入示例: ({ sessionKey: "main" }, client, ctx)
+ * 输出示例: { ok: true, payload: { sessionKey: "main", messages: [...] } }
+ *
+ * sessionKey 缺省时默认使用 "main"
+ */
 const handleChatHistory: Handler = async (params, _client, ctx) => {
   const p = params as { sessionKey?: string } | undefined;
   const sessionKey = p?.sessionKey || "main";
@@ -160,6 +197,12 @@ const handleChatHistory: Handler = async (params, _client, ctx) => {
 
 // ============== sessions.list ==============
 
+/**
+ * 处理 sessions.list 请求 — 列出所有活跃会话
+ *
+ * 输入示例: (undefined, client, ctx)
+ * 输出示例: { ok: true, payload: { sessions: ["main", "debug"] } }
+ */
 const handleSessionsList: Handler = async (_params, _client, ctx) => {
   const sessions = await ctx.agent.listSessions();
   return { ok: true, payload: { sessions } };
@@ -167,6 +210,14 @@ const handleSessionsList: Handler = async (_params, _client, ctx) => {
 
 // ============== sessions.reset ==============
 
+/**
+ * 处理 sessions.reset 请求 — 重置指定会话的上下文
+ *
+ * 输入示例: ({ sessionKey: "main" }, client, ctx)
+ * 输出示例: { ok: true, payload: { sessionKey: "main" } }
+ *
+ * sessionKey 缺省时默认重置 "main" 会话
+ */
 const handleSessionsReset: Handler = async (params, _client, ctx) => {
   const p = params as { sessionKey?: string } | undefined;
   const sessionKey = p?.sessionKey || "main";
@@ -176,6 +227,12 @@ const handleSessionsReset: Handler = async (params, _client, ctx) => {
 
 // ============== health ==============
 
+/**
+ * 处理 health 请求 — 返回服务健康状态
+ *
+ * 输入示例: (undefined, client, ctx)
+ * 输出示例: { ok: true, payload: { uptimeMs: 60000, clients: 3, authedClients: 2 } }
+ */
 const handleHealth: Handler = async (_params, _client, ctx) => {
   return {
     ok: true,

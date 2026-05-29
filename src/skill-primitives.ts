@@ -161,6 +161,14 @@ async function loadSkillFromFile(
  * - 去除引号包裹（"value" → value）
  * - SDK 层只需提取 name/description/disable-model-invocation
  *   编排层（skills.ts）会重读文件用自己的解析器提取更多字段
+ *
+ * 输入示例:
+ *   extractFrontmatter('---\nname: "my-skill"\ndescription: A useful skill\n---\n# Body')
+ * 输出示例:
+ *   { name: "my-skill", description: "A useful skill" }
+ *
+ * 输入示例: extractFrontmatter("# No frontmatter here")
+ * 输出示例: {}
  */
 export function extractFrontmatter(content: string): Record<string, string> {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -175,6 +183,14 @@ export function extractFrontmatter(content: string): Record<string, string> {
   return result;
 }
 
+/**
+ * 解析布尔字符串，不可识别时返回 fallback
+ *
+ * 输入示例: parseBool("true", false)     → 输出: true
+ * 输入示例: parseBool("no", true)        → 输出: false
+ * 输入示例: parseBool(undefined, false)  → 输出: false (使用 fallback)
+ * 输入示例: parseBool("maybe", true)     → 输出: true  (无法识别，使用 fallback)
+ */
 export function parseBool(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
   const v = value.trim().toLowerCase();
@@ -193,6 +209,12 @@ const XML_ESCAPE: Record<string, string> = {
   "'": "&apos;",
 };
 
+/**
+ * XML 特殊字符转义
+ *
+ * 输入示例: escapeXml('Hello <world> & "friends"')
+ * 输出示例: "Hello &lt;world&gt; &amp; &quot;friends&quot;"
+ */
 function escapeXml(str: string): string {
   return str.replace(/[&<>"']/g, (ch) => XML_ESCAPE[ch] ?? ch);
 }

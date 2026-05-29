@@ -22,6 +22,18 @@ import type { EventFrame } from "./protocol.js";
 
 // ============== .env ==============
 
+/**
+ * 加载当前目录下的 .env 文件到 process.env
+ *
+ * 规则:
+ * - 跳过空行和 # 开头的注释行
+ * - 不覆盖已存在的环境变量（process.env 优先）
+ * - 自动去除值两端的引号（单引号/双引号）
+ * - .env 文件不存在时静默忽略
+ *
+ * 输入示例: .env 文件内容 "API_KEY='sk-abc123'"
+ * 输出示例: process.env.API_KEY === "sk-abc123"
+ */
 function loadEnvFile(): void {
   const envPath = path.join(process.cwd(), ".env");
   let content: string;
@@ -32,6 +44,7 @@ function loadEnvFile(): void {
     const eq = t.indexOf("=");
     if (eq === -1) continue;
     const key = t.slice(0, eq).trim();
+    // 去除值两端的引号（支持 KEY="value" 和 KEY='value' 格式）
     const val = t.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
     if (key && !(key in process.env)) process.env[key] = val;
   }
@@ -40,6 +53,15 @@ loadEnvFile();
 
 // ============== 参数解析 ==============
 
+/**
+ * 从命令行参数数组中提取指定标志的值
+ *
+ * 输入示例: (["serve", "--port", "3000", "--token", "abc"], "--port")
+ * 输出示例: "3000"
+ *
+ * 输入示例: (["serve", "--port", "3000"], "--token")
+ * 输出示例: undefined
+ */
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] : undefined;
@@ -50,6 +72,13 @@ const mode = args[0] ?? "serve";
 
 // ============== serve 模式 ==============
 
+/**
+ * serve 模式 — 启动 Gateway 服务端
+ *
+ * 从命令行参数和环境变量中读取配置，创建 Agent 实例并启动 WebSocket 服务。
+ * 支持的参数: --port, --token, --provider, --model, --base-url, --api-key
+ * 环境变量回退: OPENCLAW_MINI_GW_TOKEN, OPENCLAW_MINI_PROVIDER, OPENCLAW_MINI_MODEL, OPENCLAW_MINI_BASE_URL
+ */
 async function serve() {
   const port = Number(flag(args, "--port") ?? 18789);
   const token = flag(args, "--token") ?? process.env.OPENCLAW_MINI_GW_TOKEN;
@@ -74,6 +103,19 @@ async function serve() {
 
 // ============== connect 模式 ==============
 
+/**
+ * connect 模式 — 启动交互式 Gateway 客户端
+ *
+ * 连接到已运行的 Gateway 服务，提供 REPL 交互界面。
+ * 支持的参数: --url, --token, --session
+ * 内置命令: /quit (退出), /health (健康状态), /sessions (会话列表)
+ *
+ * 事件处理:
+ * - chat.delta → 实时流式输出文本
+ * - chat.final → 输出完成，重新显示输入提示符
+ * - chat.error → 显示错误信息
+ * - agent (tool_execution_end) → 显示工具执行状态
+ */
 async function connect() {
   const url = flag(args, "--url") ?? "ws://localhost:18789";
   const token = flag(args, "--token") ?? process.env.OPENCLAW_MINI_GW_TOKEN;

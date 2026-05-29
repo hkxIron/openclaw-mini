@@ -19,6 +19,14 @@ import type { ApprovalConfig, ApprovalDecision, ApprovalRequest } from "./tool-a
 
 // ============== .env 加载 ==============
 
+/**
+ * 加载工作目录下的 .env 文件到 process.env
+ *
+ * 输入示例: loadEnvFile("/home/user/project")
+ * 效果: 读取 /home/user/project/.env，将 KEY=VALUE 行设置到环境变量
+ *
+ * 注意: 不会覆盖已存在的环境变量（只设置新的）
+ */
 function loadEnvFile(dir: string = process.cwd()): void {
   const envPath = path.join(dir, ".env");
   let content: string;
@@ -75,10 +83,22 @@ const badgeStyles = {
   approve: `${styles.black}${styles.bgYellow}`,
 } as const;
 
+/**
+ * 为文本添加 ANSI 颜色代码
+ *
+ * 输入示例: color("hello", "green")
+ * 输出示例: "\x1b[32mhello\x1b[0m"
+ */
 function color(text: string, c: keyof typeof styles): string {
   return `${styles[c]}${text}${styles.reset}`;
 }
 
+/**
+ * 生成带背景色的徽章文本（如 " MODEL " " TOOL " 等标签）
+ *
+ * 输入示例: badge("SYS", badgeStyles.system)
+ * 输出示例: "\x1b[30m\x1b[47m SYS \x1b[0m"
+ */
 function badge(text: string, style: string): string {
   return `${style} ${text} ${styles.reset}`;
 }
@@ -93,10 +113,12 @@ let lastBlockKind: BlockKind | null = null;
 // 工具调用参数缓存（start 有 args，end 有 result，需关联）
 const pendingToolArgs = new Map<string, unknown>();
 
+/** 恢复终端光标可见性（程序退出前调用，避免光标消失） */
 function resetTerminal(): void {
   process.stdout.write("\x1b[?25h");
 }
 
+/** 关闭当前输出行（若正在输出流式内容则换行，将状态重置为 idle） */
 function closeOutputLine(): void {
   if (outputMode !== "idle") {
     process.stdout.write("\n");
@@ -104,6 +126,7 @@ function closeOutputLine(): void {
   }
 }
 
+/** 确保不同类型输出块之间有空行分隔（同类型连续输出不加空行） */
 function ensureBlockSpacing(kind: BlockKind): void {
   if (lastBlockKind && lastBlockKind !== kind) {
     process.stdout.write("\n");
@@ -111,6 +134,7 @@ function ensureBlockSpacing(kind: BlockKind): void {
   lastBlockKind = kind;
 }
 
+/** 开始 thinking 输出行（打印 THINK 徽章，切换模式为 thinking） */
 function beginThinkingLine(): void {
   if (outputMode !== "thinking") {
     closeOutputLine();
@@ -120,6 +144,7 @@ function beginThinkingLine(): void {
   }
 }
 
+/** 开始 assistant 输出行（打印 MODEL 徽章，切换模式为 assistant） */
 function beginAssistantLine(): void {
   if (outputMode !== "assistant") {
     closeOutputLine();
@@ -166,12 +191,14 @@ function clearPromptEchoLine(): void {
 
 async function main() {
   const args = process.argv.slice(2);
+  console.log(`args:${args} process.env:${JSON.stringify(process.env)}`);
   const provider = readFlag(args, "--provider") ?? process.env.OPENCLAW_MINI_PROVIDER ?? "anthropic";
   const model = readFlag(args, "--model") ?? process.env.OPENCLAW_MINI_MODEL;
   const baseUrl = readFlag(args, "--base-url") ?? process.env.OPENCLAW_MINI_BASE_URL;
   const reasoningFlag = readFlag(args, "--reasoning") ?? process.env.OPENCLAW_MINI_REASONING;
   const reasoning = reasoningFlag === "none" ? undefined : (reasoningFlag as any) ?? "medium";
-  const apiKey = readFlag(args, "--api-key") ?? getEnvApiKey(provider);
+  //const apiKey = readFlag(args, "--api-key") ?? getEnvApiKey(provider);
+  const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     console.error(`错误: 未找到 ${provider} 的 API Key，请设置对应环境变量或使用 --api-key 参数`);
     process.exit(1);
@@ -362,6 +389,15 @@ async function main() {
 
 // ============== 工具函数 ==============
 
+/**
+ * 从命令行参数数组中读取标志值
+ *
+ * 输入示例: readFlag(["--model", "gpt-4", "--port", "3000"], "--model")
+ * 输出示例: "gpt-4"
+ *
+ * 输入示例: readFlag(["--model", "gpt-4"], "--port")
+ * 输出示例: undefined
+ */
 function readFlag(args: string[], name: string): string | undefined {
   const idx = args.findIndex((arg) => arg === name);
   if (idx === -1) return undefined;
@@ -372,6 +408,15 @@ function readFlag(args: string[], name: string): string | undefined {
 
 const FLAGS_WITH_VALUE = new Set(["--agent", "--model", "--provider", "--api-key", "--base-url", "--reasoning"]);
 
+/**
+ * 从命令行参数中解析 sessionId（跳过 "chat" 子命令和已知标志）
+ *
+ * 输入示例: resolveSessionIdArg(["chat", "--model", "gpt-4", "my-session"])
+ * 输出示例: "my-session"
+ *
+ * 输入示例: resolveSessionIdArg(["--model", "gpt-4"])
+ * 输出示例: undefined
+ */
 function resolveSessionIdArg(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -401,12 +446,27 @@ function formatToolCompact(name: string, args: unknown): string {
   }
 }
 
+/**
+ * 缩短路径显示（保留最后两段）
+ *
+ * 输入示例: "/home/user/project/src/utils/helper.ts"
+ * 输出示例: ".../utils/helper.ts"
+ */
 function shortPath(p: string | undefined): string {
   if (!p) return "";
   const parts = p.split("/");
   return parts.length > 2 ? `.../${parts.slice(-2).join("/")}` : p;
 }
 
+/**
+ * 处理斜杠命令
+ *
+ * 输入示例: handleCommand("/help", agent, "agent:main:main")
+ * 效果: 打印帮助信息
+ *
+ * 输入示例: handleCommand("/reset", agent, "agent:main:session-123")
+ * 效果: 清空指定会话历史
+ */
 async function handleCommand(cmd: string, agent: Agent, sessionKey: string) {
   const [command] = cmd.slice(1).split(" ");
 

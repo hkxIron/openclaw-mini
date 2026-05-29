@@ -54,6 +54,12 @@ export const ErrorCodes = {
   UNAVAILABLE: "UNAVAILABLE",
 } as const;
 
+/**
+ * 构造标准错误对象
+ *
+ * 输入示例: ("UNAUTHORIZED", "invalid token")
+ * 输出示例: { code: "UNAUTHORIZED", message: "invalid token" }
+ */
 export function errorShape(code: string, message: string): ErrorShape {
   return { code, message };
 }
@@ -69,18 +75,54 @@ export type HelloOk = {
 
 // ============== 帧验证（类型守卫） ==============
 
+/**
+ * 判断值是否为非 null 对象（类型守卫）
+ *
+ * 输入示例: ({ type: "req" })
+ * 输出示例: true
+ *
+ * 输入示例: (null)
+ * 输出示例: false
+ */
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
 }
 
+/**
+ * 判断未知值是否为合法的 RequestFrame（类型守卫）
+ *
+ * 输入示例: ({ type: "req", id: "abc-123", method: "chat.send", params: {} })
+ * 输出示例: true
+ *
+ * 输入示例: ({ type: "event", event: "tick" })
+ * 输出示例: false
+ */
 export function isRequestFrame(f: unknown): f is RequestFrame {
   return isObject(f) && f.type === "req" && typeof f.id === "string" && typeof f.method === "string";
 }
 
+/**
+ * 判断未知值是否为合法的 ResponseFrame（类型守卫）
+ *
+ * 输入示例: ({ type: "res", id: "abc-123", ok: true, payload: { hello: true } })
+ * 输出示例: true
+ *
+ * 输入示例: ({ type: "res", id: "abc-123" })  // 缺少 ok 字段
+ * 输出示例: false
+ */
 export function isResponseFrame(f: unknown): f is ResponseFrame {
   return isObject(f) && f.type === "res" && typeof f.id === "string" && typeof f.ok === "boolean";
 }
 
+/**
+ * 判断未知值是否为合法的 EventFrame（类型守卫）
+ *
+ * 输入示例: ({ type: "event", event: "tick", payload: { ts: 1700000000 }, seq: 5 })
+ * 输出示例: true
+ *
+ * 输入示例: ({ type: "event" })  // 缺少 event 字段
+ * 输出示例: false
+ */
 export function isEventFrame(f: unknown): f is EventFrame {
   return isObject(f) && f.type === "event" && typeof f.event === "string";
 }
@@ -102,6 +144,11 @@ export const GATEWAY_EVENTS = [
   "connect.challenge", "tick", "agent", "chat", "shutdown",
 ] as const;
 
+/**
+ * 生成唯一标识符（UUID v4），用于请求帧 id 和连接 id
+ *
+ * 输出示例: "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+ */
 export function newId(): string {
   return crypto.randomUUID();
 }

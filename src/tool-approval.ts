@@ -76,6 +76,22 @@ export type AllowlistEntry = {
  * 判断工具是否需要审批
  *
  * 对齐 openclaw: exec-approvals.ts → requiresExecApproval()
+ *
+ * 输入示例:
+ *   requiresApproval({
+ *     toolName: "exec",
+ *     config: { ask: "on-miss", security: "allowlist", tools: {} },
+ *     allowlist: [{ toolName: "read", addedAt: 1700000000000 }]
+ *   })
+ * 输出示例: true  (ask="on-miss" + security="allowlist" + "exec" 不在 allowlist 中 → 需要审批)
+ *
+ * 输入示例:
+ *   requiresApproval({
+ *     toolName: "read",
+ *     config: { ask: "on-miss", security: "allowlist" },
+ *     allowlist: [{ toolName: "read", addedAt: 1700000000000 }]
+ *   })
+ * 输出示例: false  ("read" 已在 allowlist 中 → 无需审批)
  */
 export function requiresApproval(params: {
   toolName: string;

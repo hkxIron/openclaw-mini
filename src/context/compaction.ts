@@ -1,3 +1,16 @@
+/**
+ * 对话历史自适应压缩 (Compaction)
+ *
+ * 本文件实现上下文窗口超限时的对话历史压缩逻辑：
+ * 1. 检测 — 判断当前消息 token 总量是否超过 contextWindow - reserveTokens
+ * 2. 分块 — 将被裁剪的消息按 token 预算切分为多个 chunk
+ * 3. 摘要 — 通过 LLM 对每个 chunk 生成结构化摘要
+ * 4. 合并 — 多段摘要合并为最终的上下文检查点
+ * 5. 追加文件操作记录 — 从被裁剪消息中提取 read/write/edit 操作并附加到摘要
+ *
+ * 对应 OpenClaw: src/agents/pi-extensions/context-pruning/compaction.ts
+ */
+
 import { createCompactionSummaryMessage, type Message } from "../session.js";
 import {
   estimateMessageTokens,
@@ -121,6 +134,11 @@ type FileOps = {
   edited: Set<string>;
 };
 
+/**
+ * 创建空的文件操作记录容器
+ *
+ * 输出示例: { read: Set{}, written: Set{}, edited: Set{} }
+ */
 function createFileOps(): FileOps {
   return {
     read: new Set<string>(),
@@ -129,6 +147,15 @@ function createFileOps(): FileOps {
   };
 }
 
+/**
+ * 从单条 assistant 消息中提取文件操作记录
+ *
+ * 遍历消息中的 tool_use 块，根据工具名称 (read/write/edit) 将文件路径
+ * 分类记录到 fileOps 中。非 assistant 消息或非 tool_use 块会被跳过。
+ *
+ * 输入示例: message={ role:"assistant", content:[{ type:"tool_use", name:"read", input:{ path:"src/a.ts" } }] }
+ * 副作用: fileOps.read 中新增 "src/a.ts"
+ */
 function extractFileOpsFromMessage(message: Message, fileOps: FileOps): void {
   if (message.role !== "assistant") {
     return;
@@ -162,13 +189,32 @@ function extractFileOpsFromMessage(message: Message, fileOps: FileOps): void {
   }
 }
 
+/**
+ * 从文件操作记录中计算"只读文件"和"已修改文件"两个列表
+ *
+ * 规则：被 write 或 edit 过的文件归为 modified；仅被 read 过（且未修改）的归为 readOnly。
+ * 两个列表均按字母序排序。
+ *
+ * 输入示例: fileOps={ read: Set{"a.ts","b.ts"}, written: Set{"b.ts"}, edited: Set{"c.ts"} }
+ * 输出示例: { readFiles: ["a.ts"], modifiedFiles: ["b.ts","c.ts"] }
+ */
 function computeFileLists(fileOps: FileOps): { readFiles: string[]; modifiedFiles: string[] } {
   const modified = new Set<string>([...fileOps.edited, ...fileOps.written]);
+  // 排除已修改的文件，剩余为纯读取文件
   const readOnly = [...fileOps.read].filter((file) => !modified.has(file)).sort();
   const modifiedFiles = [...modified].sort();
   return { readFiles: readOnly, modifiedFiles };
 }
 
+/**
+ * 将文件操作列表格式化为 XML 标签包裹的文本，用于附加到摘要末尾
+ *
+ * 输入示例: readFiles=["a.ts"], modifiedFiles=["b.ts","c.ts"]
+ * 输出示例: "\n\n<read-files>\na.ts\n</read-files>\n\n<modified-files>\nb.ts\nc.ts\n</modified-files>"
+ *
+ * 输入示例: readFiles=[], modifiedFiles=[]
+ * 输出示例: ""
+ */
 function formatFileOperations(readFiles: string[], modifiedFiles: string[]): string {
   const sections: string[] = [];
   if (readFiles.length > 0) {
@@ -195,6 +241,18 @@ export type SummarizeFn = (params: {
   maxTokens: number;
 }) => Promise<string>;
 
+/**
+ * 规范化分片数量，确保在 [1, messageCount] 范围内
+ *
+ * 输入示例: parts=3, messageCount=10
+ * 输出示例: 3
+ *
+ * 输入示例: parts=5, messageCount=2
+ * 输出示例: 2 (不超过消息总数)
+ *
+ * 输入示例: parts=0, messageCount=10
+ * 输出示例: 1 (无效值回退为 1)
+ */
 function normalizeParts(parts: number, messageCount: number): number {
   if (!Number.isFinite(parts) || parts <= 1) {
     return 1;
@@ -202,6 +260,19 @@ function normalizeParts(parts: number, messageCount: number): number {
   return Math.min(Math.max(1, Math.floor(parts)), Math.max(1, messageCount));
 }
 
+/**
+ * 计算自适应分块比率
+ *
+ * 根据消息平均 token 数与上下文窗口的比值动态调整 chunk 占比：
+ * - 消息普遍较大时（avgRatio > 10%），降低 chunk 比率以避免单 chunk 过大
+ * - 消息较小时，使用基础比率 (0.4)
+ *
+ * 输入示例: messages=[10条消息共约40000 tokens], contextWindow=200000
+ * 输出示例: 0.4 (BASE_CHUNK_RATIO，因为 avgRatio = 4800/200000 ≈ 2.4% < 10%)
+ *
+ * 输入示例: messages=[5条消息共约120000 tokens], contextWindow=200000
+ * 输出示例: 约 0.16 (降低后的比率，因为 avgRatio ≈ 14.4% > 10%)
+ */
 export function computeAdaptiveChunkRatio(messages: Message[], contextWindow: number): number {
   if (messages.length === 0) {
     return BASE_CHUNK_RATIO;
@@ -211,6 +282,7 @@ export function computeAdaptiveChunkRatio(messages: Message[], contextWindow: nu
   const safeAvgTokens = avgTokens * SAFETY_MARGIN;
   const avgRatio = safeAvgTokens / contextWindow;
 
+  // 当单条消息平均占比超过 10% 时，缩小 chunk 比率以适应大消息
   if (avgRatio > 0.1) {
     const reduction = Math.min(avgRatio * 2, BASE_CHUNK_RATIO - MIN_CHUNK_RATIO);
     return Math.max(MIN_CHUNK_RATIO, BASE_CHUNK_RATIO - reduction);
@@ -218,6 +290,18 @@ export function computeAdaptiveChunkRatio(messages: Message[], contextWindow: nu
   return BASE_CHUNK_RATIO;
 }
 
+/**
+ * 按 token 均分策略将消息拆分为指定数量的分片
+ *
+ * 计算每片的目标 token 数 = 总 tokens / parts，然后顺序遍历消息，
+ * 当当前分片累计 token 超过目标值时切分。保证最后一片包含剩余所有消息。
+ *
+ * 输入示例: messages=[6条消息], parts=2
+ * 输出示例: [[前3条(约一半tokens)], [后3条(约一半tokens)]]
+ *
+ * 输入示例: messages=[], parts=2
+ * 输出示例: []
+ */
 export function splitMessagesByTokenShare(messages: Message[], parts = DEFAULT_PARTS): Message[][] {
   if (messages.length === 0) {
     return [];
@@ -235,6 +319,7 @@ export function splitMessagesByTokenShare(messages: Message[], parts = DEFAULT_P
 
   for (const message of messages) {
     const messageTokens = estimateMessageTokens(message);
+    // 当还有剩余分片需要切分，且当前分片已超出目标 token 数时，执行切分
     if (
       chunks.length < normalizedParts - 1 &&
       current.length > 0 &&
@@ -254,6 +339,15 @@ export function splitMessagesByTokenShare(messages: Message[], parts = DEFAULT_P
   return chunks;
 }
 
+/**
+ * 按最大 token 数限制将消息切分为多个 chunk
+ *
+ * 与 splitMessagesByTokenShare 不同，本函数以绝对 token 上限切分，
+ * 不预设分片数。若单条消息超过 maxTokens，则该消息独占一个 chunk。
+ *
+ * 输入示例: messages=[10条消息], maxTokens=5000
+ * 输出示例: [[前几条共约5000tokens], [中间几条], ...]
+ */
 export function chunkMessagesByMaxTokens(messages: Message[], maxTokens: number): Message[][] {
   if (messages.length === 0) {
     return [];
@@ -272,6 +366,7 @@ export function chunkMessagesByMaxTokens(messages: Message[], maxTokens: number)
     current.push(message);
     currentTokens += messageTokens;
 
+    // 单条消息超过 maxTokens 时强制独占一个 chunk，避免后续消息被合入
     if (messageTokens > maxTokens) {
       chunks.push(current);
       current = [];
@@ -285,11 +380,33 @@ export function chunkMessagesByMaxTokens(messages: Message[], maxTokens: number)
   return chunks;
 }
 
+/**
+ * 判断单条消息是否过大以至于无法安全地送入 LLM 进行摘要
+ *
+ * 阈值：消息 token 数 * 安全系数 > 上下文窗口的 50%
+ *
+ * 输入示例: msg(约60000 tokens), contextWindow=200000
+ * 输出示例: false (60000*1.2=72000 < 100000)
+ *
+ * 输入示例: msg(约90000 tokens), contextWindow=200000
+ * 输出示例: true (90000*1.2=108000 > 100000)
+ */
 function isOversizedForSummary(msg: Message, contextWindow: number): boolean {
   const tokens = estimateMessageTokens(msg) * SAFETY_MARGIN;
   return tokens > contextWindow * 0.5;
 }
 
+/**
+ * 从消息 content 中提取纯文本内容
+ *
+ * 若 content 为字符串则直接返回；若为块数组则仅拼接 text 类型块的文本。
+ *
+ * 输入示例: "hello"
+ * 输出示例: "hello"
+ *
+ * 输入示例: [{ type:"text", text:"hi" }, { type:"tool_result", content:"..." }]
+ * 输出示例: "hi"
+ */
 function extractUserText(content: Message["content"]): string {
   if (typeof content === "string") {
     return content;
@@ -300,6 +417,18 @@ function extractUserText(content: Message["content"]): string {
     .join("");
 }
 
+/**
+ * 将消息数组序列化为人类可读的对话文本，用于作为 LLM 摘要的输入
+ *
+ * 格式示例:
+ *   [User]: 用户消息
+ *   [Tool result]: 工具返回内容
+ *   [Assistant]: 助手回复
+ *   [Assistant tool calls]: read(path="src/a.ts"); write(path="b.ts", content="...")
+ *
+ * 输入示例: [{ role:"user", content:"你好" }, { role:"assistant", content:"Hi!" }]
+ * 输出示例: "[User]: 你好\n\n[Assistant]: Hi!"
+ */
 function serializeConversation(messages: Message[]): string {
   const parts: string[] = [];
   for (const msg of messages) {
@@ -353,6 +482,12 @@ function serializeConversation(messages: Message[]): string {
   return parts.join("\n\n");
 }
 
+/**
+ * 生成单次摘要：将消息序列化后调用 LLM 生成结构化摘要
+ *
+ * 根据是否有 previousSummary 决定使用"新建摘要"还是"增量更新"的 prompt 模板。
+ * 支持通过 customInstructions 追加额外关注点。
+ */
 async function generateSummary(params: {
   messages: Message[];
   summarize: SummarizeFn;
@@ -360,6 +495,7 @@ async function generateSummary(params: {
   customInstructions?: string;
   previousSummary?: string;
 }): Promise<string> {
+  // 根据是否存在已有摘要选择不同的 prompt 策略
   let basePrompt = params.previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
   if (params.customInstructions) {
     basePrompt = `${basePrompt}\n\nAdditional focus: ${params.customInstructions}`;
@@ -378,6 +514,12 @@ async function generateSummary(params: {
   });
 }
 
+/**
+ * 分块逐步摘要：将消息按 maxChunkTokens 切分后，依次生成摘要
+ *
+ * 采用滚动摘要策略：每次将上一个 chunk 的摘要作为 previousSummary 传入下一次调用，
+ * 实现增量式信息累积。
+ */
 async function summarizeChunks(params: {
   messages: Message[];
   summarize: SummarizeFn;
@@ -390,6 +532,7 @@ async function summarizeChunks(params: {
     return params.previousSummary ?? DEFAULT_SUMMARY_FALLBACK;
   }
   const chunks = chunkMessagesByMaxTokens(params.messages, params.maxChunkTokens);
+  // 滚动摘要：每个 chunk 的输出作为下一个 chunk 的 previousSummary
   let summary = params.previousSummary;
   for (const chunk of chunks) {
     summary = await generateSummary({
@@ -403,6 +546,16 @@ async function summarizeChunks(params: {
   return summary ?? DEFAULT_SUMMARY_FALLBACK;
 }
 
+/**
+ * 带降级回退的摘要生成
+ *
+ * 处理流程：
+ * 1. 首先尝试直接对所有消息分块摘要
+ * 2. 若失败（如超长导致 API 报错），则过滤掉超大消息后重试
+ * 3. 若仍失败，返回兜底描述文本
+ *
+ * 这确保即使存在异常大的消息也不会导致整个 compaction 失败。
+ */
 async function summarizeWithFallback(params: {
   messages: Message[];
   summarize: SummarizeFn;
@@ -416,12 +569,14 @@ async function summarizeWithFallback(params: {
     return params.previousSummary ?? DEFAULT_SUMMARY_FALLBACK;
   }
 
+  // 第一次尝试：直接对全部消息分块摘要
   try {
     return await summarizeChunks(params);
   } catch {
-    // fallback
+    // fallback — 可能因为消息过大导致 LLM 调用失败
   }
 
+  // 第二次尝试：过滤掉超大消息，仅对可处理的消息生成摘要
   const smallMessages: Message[] = [];
   const oversizedNotes: string[] = [];
   for (const msg of params.messages) {
@@ -442,13 +597,24 @@ async function summarizeWithFallback(params: {
       const notes = oversizedNotes.length > 0 ? `\n\n${oversizedNotes.join("\n")}` : "";
       return partial + notes;
     } catch {
-      // fall through
+      // fall through — 即使过滤后仍失败，使用兜底文本
     }
   }
 
   return `Context contained ${params.messages.length} messages. Summary unavailable due to size limits.`;
 }
 
+/**
+ * 分阶段摘要：先并行摘要各分片，再合并为最终摘要
+ *
+ * 适用于大量消息的场景。流程：
+ * 1. 判断是否需要分片（消息数 >= minMessagesForSplit 且总 token > maxChunkTokens）
+ * 2. 若不需要分片，直接走 summarizeWithFallback
+ * 3. 若需要分片，按 token 均分为 parts 个分片，各自独立摘要
+ * 4. 将各分片摘要作为新"消息"再次调用摘要函数进行合并
+ *
+ * 这种两层结构能处理超长对话历史，同时保证最终摘要的质量。
+ */
 export async function summarizeInStages(params: {
   messages: Message[];
   summarize: SummarizeFn;
@@ -469,10 +635,12 @@ export async function summarizeInStages(params: {
   const parts = normalizeParts(params.parts ?? DEFAULT_PARTS, messages.length);
   const totalTokens = estimateMessagesTokens(messages);
 
+  // 若消息量不足或总 token 在单 chunk 范围内，无需分阶段处理
   if (parts <= 1 || messages.length < minMessagesForSplit || totalTokens <= params.maxChunkTokens) {
     return summarizeWithFallback(params);
   }
 
+  // 第一阶段：将消息按 token 均分为多个分片，各自独立生成摘要
   const splits = splitMessagesByTokenShare(messages, parts).filter((chunk) => chunk.length > 0);
   if (splits.length <= 1) {
     return summarizeWithFallback(params);
@@ -493,6 +661,7 @@ export async function summarizeInStages(params: {
     return partialSummaries[0];
   }
 
+  // 第二阶段：将各分片摘要作为消息输入，合并为最终统一摘要
   const summaryMessages: Message[] = partialSummaries.map((summary) => ({
     role: "user",
     content: summary,

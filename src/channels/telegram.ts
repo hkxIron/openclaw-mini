@@ -35,6 +35,15 @@ const TYPING_INTERVAL_MS = 5000;
 
 // ============== 启动 ==============
 
+/**
+ * 启动 Telegram 频道适配器
+ *
+ * 初始化 grammy Bot 实例并连接 Gateway 客户端，建立双向通信:
+ * - Telegram 消息 → Gateway RPC (chat.send) → Agent 处理
+ * - Gateway 事件 (chat/final) → Bot API (sendMessage) → 用户收到回复
+ *
+ * 返回 { close } 对象，用于优雅关闭 Bot 和 Gateway 连接。
+ */
 export async function startTelegramChannel(opts: TelegramChannelOptions) {
   const bot = new Bot(opts.botToken);
 
@@ -43,12 +52,24 @@ export async function startTelegramChannel(opts: TelegramChannelOptions) {
   // chatId → typing interval（流式响应期间持续发送 typing 状态）
   const typingTimers = new Map<number, ReturnType<typeof setInterval>>();
 
+  /**
+   * 将 Telegram chatId 转换为 Gateway sessionKey
+   *
+   * 输入示例: sessionKeyFor(123456789)
+   * 输出示例: "tg:123456789"
+   */
   function sessionKeyFor(chatId: number): string {
     return `tg:${chatId}`;
   }
 
   // ============== Typing 管理 ==============
 
+  /**
+   * 开始向指定聊天发送 "typing..." 状态
+   *
+   * 立即发送一次 typing 动作，然后每 TYPING_INTERVAL_MS (5秒) 重复发送，
+   * 保持用户端持续看到 "正在输入" 提示，直到 stopTyping 被调用。
+   */
   function startTyping(chatId: number): void {
     stopTyping(chatId);
     bot.api.sendChatAction(chatId, "typing").catch(() => {});
@@ -57,6 +78,11 @@ export async function startTelegramChannel(opts: TelegramChannelOptions) {
     }, TYPING_INTERVAL_MS));
   }
 
+  /**
+   * 停止向指定聊天发送 "typing..." 状态
+   *
+   * 清除定时器并从 typingTimers 中移除。重复调用安全（幂等）。
+   */
   function stopTyping(chatId: number): void {
     const timer = typingTimers.get(chatId);
     if (timer) {
@@ -67,6 +93,13 @@ export async function startTelegramChannel(opts: TelegramChannelOptions) {
 
   // ============== 长消息分片发送 ==============
 
+  /**
+   * 分片发送长消息
+   *
+   * Telegram 单条消息最大长度为 TG_MAX_LENGTH (4096字符)。
+   * 超长文本按 4096 字符切片，依次发送多条消息。
+   * 空文本直接跳过不发送。
+   */
   async function sendLongMessage(chatId: number, text: string): Promise<void> {
     if (!text) return;
     let remaining = text;

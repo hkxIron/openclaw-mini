@@ -246,6 +246,7 @@ export class GatewayClient {
     }, interval);
   }
 
+  /** 停止心跳监视定时器 */
   private stopTickWatch(): void {
     if (this.tickTimer) {
       clearInterval(this.tickTimer);

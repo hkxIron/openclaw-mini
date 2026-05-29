@@ -49,6 +49,16 @@ export type GatewayServer = {
  * - dropIfSlow: 非关键事件（tick、delta）跳过慢消费者而非断开
  * - 强制关闭: 关键事件时，慢消费者直接断开防止内存泄漏
  */
+/**
+ * 创建事件广播器，向所有已认证客户端推送事件帧
+ *
+ * 输入示例: (clients)  // 已连接的客户端集合
+ * 输出示例: broadcast("tick", { ts: 1700000000 }, { dropIfSlow: true })
+ *
+ * 背压策略:
+ * - dropIfSlow=true: 跳过慢消费者（非关键事件如 tick/delta）
+ * - dropIfSlow=false/undefined: 强制关闭慢消费者（关键事件如 shutdown）
+ */
 function createBroadcaster(clients: Set<GwClient>): BroadcastFn {
   let seq = 0;
   return (event: string, payload: unknown, opts?: { dropIfSlow?: boolean }) => {
@@ -73,6 +83,18 @@ function createBroadcaster(clients: Set<GwClient>): BroadcastFn {
 
 // ============== 启动服务 ==============
 
+/**
+ * 启动 Gateway WebSocket 服务
+ *
+ * 输入示例: ({ port: 18789, token: "secret", agent: agentInstance })
+ * 输出示例: { close: Function, port: 18789 }
+ *
+ * 启动流程:
+ * 1. 创建 HTTP 服务 + WebSocket 服务
+ * 2. 新连接 → 发送 challenge → 等待 connect 请求完成握手
+ * 3. 启动 30s tick 定时器广播心跳
+ * 4. 返回 { close, port } 用于外部控制生命周期
+ */
 export async function startGatewayServer(opts: GatewayServerOptions): Promise<GatewayServer> {
   const requestedPort = opts.port ?? 18789;
   const clients = new Set<GwClient>();
@@ -193,12 +215,24 @@ export async function startGatewayServer(opts: GatewayServerOptions): Promise<Ga
 
 // ============== 帮助函数 ==============
 
+/**
+ * 向 WebSocket 连接发送帧（仅在连接打开时发送）
+ *
+ * 输入示例: (socket, { type: "event", event: "tick", payload: { ts: 1700000000 }, seq: 1 })
+ * 输出示例: 无返回值，帧通过 socket 发出
+ */
 function send(socket: WebSocket, frame: EventFrame | ResponseFrame): void {
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(frame));
   }
 }
 
+/**
+ * 向客户端发送 RPC 响应帧（封装 send 的快捷方法）
+ *
+ * 输入示例: (socket, "abc-123", true, { sessionKey: "main" })
+ * 输出示例: 无返回值，发送 ResponseFrame { type:"res", id:"abc-123", ok:true, payload:{...} }
+ */
 function respond(socket: WebSocket, id: string, ok: boolean, payload?: unknown, error?: import("./protocol.js").ErrorShape): void {
   send(socket, { type: "res", id, ok, payload, error });
 }

@@ -18,10 +18,23 @@ const INVALID_CHARS_RE = /[^a-z0-9_-]+/g;
 const LEADING_DASH_RE = /^-+/;
 const TRAILING_DASH_RE = /-+$/;
 
+/**
+ * 将 token 值归一化为小写去空格字符串
+ *
+ * 输入示例: "  Main  " → "main"
+ * 输入示例: null → ""
+ */
 function normalizeToken(value: string | undefined | null): string {
   return (value ?? "").trim().toLowerCase();
 }
 
+/**
+ * 归一化 agent ID（转小写，替换非法字符为连字符，限长 64）
+ *
+ * 输入示例: "My Agent!" → "my-agent"
+ * 输入示例: "" → "main"
+ * 输入示例: "valid-id" → "valid-id"
+ */
 export function normalizeAgentId(value: string | undefined | null): string {
   const trimmed = (value ?? "").trim();
   if (!trimmed) {
@@ -40,11 +53,26 @@ export function normalizeAgentId(value: string | undefined | null): string {
   );
 }
 
+/**
+ * 归一化主会话 key（转小写，空值回退为 "main"）
+ *
+ * 输入示例: "Session-1" → "session-1"
+ * 输入示例: "" → "main"
+ */
 export function normalizeMainKey(value: string | undefined | null): string {
   const trimmed = (value ?? "").trim();
   return trimmed ? trimmed.toLowerCase() : DEFAULT_MAIN_KEY;
 }
 
+/**
+ * 构建标准格式的 agent session key
+ *
+ * 输入示例: { agentId: "my-bot", mainKey: "chat-1" }
+ * 输出示例: "agent:my-bot:chat-1"
+ *
+ * 输入示例: { agentId: "main" }
+ * 输出示例: "agent:main:main"
+ */
 export function buildAgentMainSessionKey(params: {
   agentId: string;
   mainKey?: string | undefined;
@@ -54,6 +82,15 @@ export function buildAgentMainSessionKey(params: {
   return `agent:${agentId}:${mainKey}`;
 }
 
+/**
+ * 解析 session key，提取 agentId 和剩余部分
+ *
+ * 输入示例: "agent:my-bot:session-1"
+ * 输出示例: { agentId: "my-bot", rest: "session-1" }
+ *
+ * 输入示例: "invalid-key"
+ * 输出示例: null
+ */
 export function parseAgentSessionKey(
   sessionKey: string | undefined | null,
 ): { agentId: string; rest: string } | null {

@@ -28,6 +28,16 @@ type ToolCall = { id: string; name?: string };
  * 对应 OpenClaw: session-tool-result-guard.ts → extractAssistantToolCalls()
  * - openclaw 支持 type: "toolCall" | "toolUse" | "functionCall"
  * - mini 统一为 type: "tool_use"（Anthropic API 格式）
+ *
+ * 输入示例:
+ *   { role: "assistant", content: [
+ *     { type: "text", text: "Let me read the file." },
+ *     { type: "tool_use", id: "toolu_01abc", name: "read", input: { path: "/tmp/a.ts" } }
+ *   ] }
+ * 输出示例: [{ id: "toolu_01abc", name: "read" }]
+ *
+ * 输入示例: { role: "user", content: "hello" }
+ * 输出示例: [] (非 assistant 消息直接返回空数组)
  */
 function extractToolUsesFromAssistant(msg: Message): ToolCall[] {
   if (msg.role !== "assistant" || typeof msg.content === "string") return [];
@@ -46,6 +56,15 @@ function extractToolUsesFromAssistant(msg: Message): ToolCall[] {
  * 对应 OpenClaw: session-tool-result-guard.ts → extractToolResultId()
  * - openclaw 中 toolResult 是独立消息，检查 toolCallId / toolUseId
  * - mini 中 tool_result 是 ContentBlock，检查 tool_use_id
+ *
+ * 输入示例:
+ *   { role: "user", content: [
+ *     { type: "tool_result", tool_use_id: "toolu_01abc", content: "file content..." }
+ *   ] }
+ * 输出示例: ["toolu_01abc"]
+ *
+ * 输入示例: { role: "assistant", content: [...] }
+ * 输出示例: [] (非 user 消息直接返回空数组)
  */
 function extractToolResultIds(msg: Message): string[] {
   if (msg.role !== "user" || typeof msg.content === "string") return [];
@@ -64,6 +83,14 @@ function extractToolResultIds(msg: Message): string[] {
  * 对应 OpenClaw: session-transcript-repair.ts → makeMissingToolResult()
  * - isError: true 语义（openclaw 原始字段，mini 通过内容文本表达）
  * - 消息文本与 openclaw 保持一致风格
+ *
+ * 输入示例: makeMissingToolResult("toolu_01abc", "read")
+ * 输出示例: {
+ *   type: "tool_result",
+ *   tool_use_id: "toolu_01abc",
+ *   name: "read",
+ *   content: "[openclaw-mini] missing tool result in session history; inserted synthetic error result for transcript repair."
+ * }
  */
 function makeMissingToolResult(toolCallId: string, toolName?: string): ContentBlock {
   return {

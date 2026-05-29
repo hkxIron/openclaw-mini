@@ -33,8 +33,11 @@ type CompiledPattern =
  * 工具名归一化
  *
  * 对应 OpenClaw: normalizeToolName()
- * - apply-patch → apply_patch
- * - bash → exec
+ *
+ * 输入示例: "bash"         → 输出: "exec"
+ * 输入示例: "apply-patch"  → 输出: "apply_patch"
+ * 输入示例: "Read"         → 输出: "read"
+ * 输入示例: "  Exec  "     → 输出: "exec"
  */
 function normalizeToolName(name: string): string {
   const trimmed = name.trim().toLowerCase();
@@ -48,6 +51,11 @@ function normalizeToolName(name: string): string {
  * 编译 pattern 为三级类型
  *
  * 对应 OpenClaw: pi-tools.policy.ts:11-32 → compilePattern()
+ *
+ * 输入示例: "*"          → 输出: { kind: "all" }
+ * 输入示例: "exec"       → 输出: { kind: "exact", value: "exec" }
+ * 输入示例: "mcp__*"     → 输出: { kind: "regex", value: /^mcp__.*$/ }
+ * 输入示例: "bash"       → 输出: { kind: "exact", value: "exec" } (经过归一化)
  */
 function compilePattern(pattern: string): CompiledPattern {
   const normalized = normalizeToolName(pattern);
@@ -78,6 +86,9 @@ function compilePatterns(patterns: string[]): CompiledPattern[] {
  * 匹配已编译的 pattern 列表
  *
  * 对应 OpenClaw: pi-tools.policy.ts → matchesAny()
+ *
+ * 遍历 patterns，任一匹配即返回 true；全部不匹配返回 false。
+ * 短路优化: "all" 类型直接返回 true，无需遍历后续 pattern。
  */
 function matchesAny(name: string, patterns: CompiledPattern[]): boolean {
   for (const pattern of patterns) {
@@ -99,6 +110,12 @@ function matchesAny(name: string, patterns: CompiledPattern[]): boolean {
  * 3. allow 匹配 — 明确允许
  * 4. apply_patch 继承 exec 权限（openclaw 特殊规则）
  * 5. 默认拒绝
+ *
+ * 输入示例: isToolAllowed("bash", { allow: ["exec", "read"], deny: [] })
+ * 输出示例: true  ("bash" 归一化为 "exec"，在 allow 列表中)
+ *
+ * 输入示例: isToolAllowed("write", { allow: ["exec"], deny: ["write"] })
+ * 输出示例: false  (匹配 deny 列表)
  */
 export function isToolAllowed(name: string, policy?: ToolPolicy): boolean {
   if (!policy) return true;
@@ -115,6 +132,15 @@ export function isToolAllowed(name: string, policy?: ToolPolicy): boolean {
   return false;
 }
 
+/**
+ * 按策略过滤工具列表，返回允许使用的工具子集
+ *
+ * 输入示例: filterToolsByPolicy(
+ *   [{ name: "exec", ... }, { name: "write", ... }, { name: "read", ... }],
+ *   { allow: ["exec", "read"], deny: [] }
+ * )
+ * 输出示例: [{ name: "exec", ... }, { name: "read", ... }]
+ */
 export function filterToolsByPolicy(tools: Tool[], policy?: ToolPolicy): Tool[] {
   if (!policy) return tools;
   // 预编译一次，避免 N 个工具重复编译 N 次

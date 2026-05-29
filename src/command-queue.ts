@@ -31,6 +31,14 @@ type LaneState = {
 
 const lanes = new Map<string, LaneState>();
 
+/**
+ * 获取或创建 lane 状态
+ *
+ * 输入示例: "session:agent:main:session-1"
+ * 输出示例: { lane: "session:agent:main:session-1", active: 0, queue: [], maxConcurrent: 1 }
+ *
+ * 若 lane 不存在则创建默认状态（maxConcurrent=1，即串行执行）
+ */
 function getLaneState(lane: string): LaneState {
   const existing = lanes.get(lane);
   if (existing) {
@@ -46,6 +54,14 @@ function getLaneState(lane: string): LaneState {
   return created;
 }
 
+/**
+ * 排空 lane 队列，按并发上限启动等待中的任务
+ *
+ * 排空循环逻辑:
+ * 1. 若 lane 空闲且无排队任务（session lane）→ 从 Map 中删除以释放内存
+ * 2. 否则循环: 当活跃数 < maxConcurrent 且队列非空时，弹出队首任务并异步执行
+ * 3. 每个任务完成（成功或失败）后递减 active 并递归调用 drainLane，驱动后续任务
+ */
 function drainLane(lane: string) {
   const state = getLaneState(lane);
 
@@ -60,6 +76,7 @@ function drainLane(lane: string) {
     const entry = state.queue.shift() as QueueEntry<unknown>;
     state.active += 1;
 
+    // 检测排队等待是否超阈值，触发 onWait 回调通知调用方
     const waitMs = Date.now() - entry.enqueuedAt;
     if (waitMs > entry.warnAfterMs && entry.onWait) {
       entry.onWait(waitMs, state.queue.length);
@@ -69,17 +86,25 @@ function drainLane(lane: string) {
       try {
         const result = await entry.task();
         state.active -= 1;
-        drainLane(lane);
+        drainLane(lane); // 递归驱动下一个等待任务
         entry.resolve(result);
       } catch (err) {
         state.active -= 1;
-        drainLane(lane);
+        drainLane(lane); // 失败也要继续排空后续任务
         entry.reject(err);
       }
     })();
   }
 }
 
+/**
+ * 设置 lane 的最大并发数
+ *
+ * 输入示例: setLaneConcurrency("global:main", 5)
+ * 输出示例: 无返回值，内部将 lane 的 maxConcurrent 设为 5 并立即尝试排空队列
+ *
+ * maxConcurrent 最小值为 1（向下取整后不低于 1）
+ */
 export function setLaneConcurrency(lane: string, maxConcurrent: number) {
   const state = getLaneState(lane);
   state.maxConcurrent = Math.max(1, Math.floor(maxConcurrent));
@@ -91,6 +116,14 @@ export interface EnqueueOpts {
   onWait?: (waitMs: number, queuedAhead: number) => void;
 }
 
+/**
+ * 将任务入队到指定 lane，返回 Promise 等待执行结果
+ *
+ * 输入示例: enqueueInLane("session:tg:123", () => callLLM(prompt), { warnAfterMs: 5000 })
+ * 输出示例: Promise<LLMResponse>（在 lane 并发许可下执行后 resolve）
+ *
+ * 任务入队后立即调用 drainLane 尝试启动执行
+ */
 export function enqueueInLane<T>(
   lane: string,
   task: () => Promise<T>,
@@ -110,6 +143,18 @@ export function enqueueInLane<T>(
   });
 }
 
+/**
+ * 将 sessionKey 解析为 session lane 名称
+ *
+ * 输入示例: "agent:main:session-1"
+ * 输出示例: "session:agent:main:session-1"
+ *
+ * 输入示例: "session:tg:123"  (已有前缀)
+ * 输出示例: "session:tg:123"  (原样返回)
+ *
+ * 输入示例: "" (空字符串)
+ * 输出示例: "session:main" (fallback 到 "main")
+ */
 export function resolveSessionLane(sessionKey: string): string {
   const cleaned = sessionKey.trim() || "main";
   return cleaned.startsWith("session:") ? cleaned : `session:${cleaned}`;
@@ -129,6 +174,15 @@ export function deleteLane(lane: string): boolean {
   return lanes.delete(lane);
 }
 
+/**
+ * 解析 global lane 名称
+ *
+ * 输入示例: "high-priority"
+ * 输出示例: "high-priority"
+ *
+ * 输入示例: undefined 或 ""
+ * 输出示例: "main" (默认 global lane)
+ */
 export function resolveGlobalLane(lane?: string): string {
   const cleaned = lane?.trim();
   return cleaned ? cleaned : "main";

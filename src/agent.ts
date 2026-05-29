@@ -1,5 +1,5 @@
 /**
- * Mini Agent 核心
+ * Mini Agent 核心, 项目主入口
  *
  * 5 大核心子系统:
  * 1. Session Manager - 会话管理 (JSONL 持久化)
@@ -286,6 +286,7 @@ export class Agent {
       anthropic: "anthropic-messages",
       openai: "openai-completions",
       google: "google-generative-ai",
+      deepseek : "deepseek",
     };
     let modelDef: Model<any> | undefined = config.modelDef ?? getModel(provider as any, modelId as any);
     if (!modelDef && modelId) {

@@ -122,6 +122,12 @@ const CONTEXT_OVERFLOW_PATTERNS = [
   "context overflow",
 ];
 
+/**
+ * 判断消息是否匹配任一模式（大小写不敏感的子串匹配）
+ *
+ * 将 message 转小写后，逐一检查 patterns 中的模式是否为其子串。
+ * 任一匹配即返回 true。
+ */
 function matchesAny(message: string, patterns: string[]): boolean {
   const lower = message.toLowerCase();
   return patterns.some((p) => lower.includes(p));
@@ -160,6 +166,15 @@ export function isAuthError(message?: string): boolean {
  *
  * 对应 OpenClaw: pi-embedded-helpers/errors.ts → classifyFailoverReason()
  * - 按优先级匹配: billing > auth > rate_limit > timeout > format > null
+ *
+ * 输入示例: classifyFailoverReason("Error 429: too many requests")
+ * 输出示例: "rate_limit"
+ *
+ * 输入示例: classifyFailoverReason("invalid_api_key provided")
+ * 输出示例: "auth"
+ *
+ * 输入示例: classifyFailoverReason("some random error")
+ * 输出示例: null (无法分类)
  */
 export function classifyFailoverReason(message: string): FailoverReason | null {
   if (matchesAny(message, BILLING_PATTERNS)) return "billing";
@@ -174,6 +189,15 @@ export function classifyFailoverReason(message: string): FailoverReason | null {
  * 判断错误是否值得触发 failover（切换 profile / model）
  *
  * 对应 OpenClaw: isFailoverErrorMessage()
+ *
+ * 输入示例: isFailoverErrorMessage("Error 429: too many requests")
+ * 输出示例: true  (rate_limit 触发 failover)
+ *
+ * 输入示例: isFailoverErrorMessage("request timed out")
+ * 输出示例: false (timeout 不触发 failover，可能只是网络抖动)
+ *
+ * 输入示例: isFailoverErrorMessage(undefined)
+ * 输出示例: false
  */
 export function isFailoverErrorMessage(message?: string): boolean {
   if (!message) return false;
@@ -214,6 +238,14 @@ export interface RetryOptions {
  * 退避公式: delay = minDelayMs * 2^(attempt-1)
  * 加抖动:   delay *= (1 + random(-jitter, +jitter))
  * 上下界:   clamp(minDelayMs, maxDelayMs)
+ *
+ * 用法示例:
+ *   const result = await retryAsync(() => callLLM(messages), {
+ *     attempts: 3,
+ *     minDelayMs: 500,
+ *     shouldRetry: (err) => isRateLimitError(describeError(err)),
+ *     onRetry: ({ attempt, delay }) => console.log(`重试 #${attempt}, 等待 ${delay}ms`),
+ *   });
  */
 export async function retryAsync<T>(
   fn: () => Promise<T>,
@@ -262,6 +294,18 @@ function sleep(ms: number): Promise<void> {
 
 // ============== 描述错误 ==============
 
+/**
+ * 将未知错误转为可读字符串
+ *
+ * 输入示例: describeError(new Error("connection refused"))
+ * 输出示例: "connection refused"
+ *
+ * 输入示例: describeError("plain string error")
+ * 输出示例: "plain string error"
+ *
+ * 输入示例: describeError(42)
+ * 输出示例: "42"
+ */
 export function describeError(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
